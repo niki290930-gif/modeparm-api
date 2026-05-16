@@ -71,12 +71,28 @@ def accept_to_instruct(ship_box_ids):
         print(f"[전환 오류] {e}")
         return 0
 
+# ── 기본 상태 확인 ──────────────────────────────
 @app.route("/")
 def index():
     return jsonify({"status": "ok", "message": "모드팜 API 서버"})
 
+# ★ 헬스체크 (웹앱에서 서버 깨울 때 사용)
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok"})
+
+# ── 쿠팡 주문 수집 (기존 경로 유지) ────────────
 @app.route("/coupang/orders")
 def get_coupang_orders():
+    return _fetch_orders()
+
+# ★ 웹앱 연동용 단축 경로 추가
+@app.route("/orders")
+def get_orders():
+    return _fetch_orders()
+
+# ── 주문 수집 공통 로직 ─────────────────────────
+def _fetch_orders():
     try:
         path = f"/v2/providers/openapi/apis/api/v4/vendors/{COUPANG_VENDOR_ID}/ordersheets"
         now = datetime.utcnow()
@@ -88,8 +104,11 @@ def get_coupang_orders():
         # 결제완료 → 상품준비중 전환
         accept_query = f"createdAtFrom={created_from}&createdAtTo={created_to}&status=ACCEPT&maxPerPage=50"
         auth = make_signature("GET", path, accept_query)
-        resp = requests.get(f"https://api-gateway.coupang.com{path}?{accept_query}",
-                            headers={"Authorization": auth, "Content-Type": "application/json"}, timeout=10)
+        resp = requests.get(
+            f"https://api-gateway.coupang.com{path}?{accept_query}",
+            headers={"Authorization": auth, "Content-Type": "application/json"},
+            timeout=10
+        )
         accept_result = resp.json()
         if str(accept_result.get("code")) == "200":
             accept_data = accept_result.get("data", [])
@@ -111,7 +130,11 @@ def get_coupang_orders():
 
             auth = make_signature("GET", path, query)
             url = f"https://api-gateway.coupang.com{path}?{query}"
-            resp = requests.get(url, headers={"Authorization": auth, "Content-Type": "application/json"}, timeout=10)
+            resp = requests.get(
+                url,
+                headers={"Authorization": auth, "Content-Type": "application/json"},
+                timeout=10
+            )
             result = resp.json()
 
             if str(result.get("code")) != "200":
@@ -174,6 +197,7 @@ def get_coupang_orders():
 
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
