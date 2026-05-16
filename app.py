@@ -93,7 +93,7 @@ def _fetch_orders():
         path = f"/v2/providers/openapi/apis/api/v4/vendors/{COUPANG_VENDOR_ID}/ordersheets"
         now = datetime.utcnow()
         created_from = (now - timedelta(days=14)).strftime("%Y-%m-%d")
-        created_to = now.strftime("%Y-%m-%d")
+        created_to = (now + timedelta(days=1)).strftime("%Y-%m-%d")
         all_orders = []
         seen_ids = set()
 
