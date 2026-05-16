@@ -210,6 +210,9 @@ def _fetch_orders():
             if page >= 20:
                 break
 
+        # 최신 주문이 맨 위로 (ordered_at 기준 내림차순)
+        all_orders.sort(key=lambda x: x.get("ordered_at", ""), reverse=True)
+
         return jsonify({"success": True, "orders": all_orders, "count": len(all_orders)})
 
     except Exception as e:
