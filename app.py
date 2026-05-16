@@ -99,32 +99,49 @@ def _fetch_orders():
 
         print(f"[수집 시작] 기간: {created_from} ~ {created_to}")
 
-        # 결제완료(ACCEPT) → 상품준비중(INSTRUCT) 전환
-        accept_query = f"createdAtFrom={created_from}&createdAtTo={created_to}&status=ACCEPT&maxPerPage=50"
-        auth = make_signature("GET", path, accept_query)
-        resp = requests.get(
-            f"https://api-gateway.coupang.com{path}?{accept_query}",
-            headers={"Authorization": auth, "Content-Type": "application/json"},
-            timeout=10
-        )
-        accept_result = resp.json()
-        print(f"[ACCEPT 조회] code={accept_result.get('code')} message={accept_result.get('message')}")
-
-        if str(accept_result.get("code")) == "200":
-            accept_data = accept_result.get("data", [])
-            if isinstance(accept_data, dict):
-                accept_sheets = accept_data.get("orderSheets", [])
+        # 결제완료(ACCEPT) → 상품준비중(INSTRUCT) 전환 (페이지 전체 수집)
+        accept_ship_box_ids = []
+        next_token = ""
+        page = 0
+        while True:
+            page += 1
+            if next_token:
+                accept_query = f"createdAtFrom={created_from}&createdAtTo={created_to}&status=ACCEPT&maxPerPage=50&nextToken={next_token}"
             else:
-                accept_sheets = accept_data if isinstance(accept_data, list) else []
-            print(f"[ACCEPT 건수] {len(accept_sheets)}건")
-            ship_box_ids = [sheet.get("shipmentBoxId") for sheet in accept_sheets if sheet.get("shipmentBoxId")]
-            print(f"[전환 대상 shipmentBoxId] {ship_box_ids}")
-            if ship_box_ids:
-                converted = accept_to_instruct(ship_box_ids)
-                print(f"[전환 완료] {converted}건")
-                time.sleep(2)
-        else:
-            print(f"[ACCEPT 조회 실패] {accept_result}")
+                accept_query = f"createdAtFrom={created_from}&createdAtTo={created_to}&status=ACCEPT&maxPerPage=50"
+            auth = make_signature("GET", path, accept_query)
+            resp = requests.get(
+                f"https://api-gateway.coupang.com{path}?{accept_query}",
+                headers={"Authorization": auth, "Content-Type": "application/json"},
+                timeout=10
+            )
+            accept_result = resp.json()
+            print(f"[ACCEPT 페이지{page}] code={accept_result.get('code')} message={accept_result.get('message')}")
+
+            if str(accept_result.get("code")) == "200":
+                accept_data = accept_result.get("data", [])
+                if isinstance(accept_data, dict):
+                    accept_sheets = accept_data.get("orderSheets", [])
+                else:
+                    accept_sheets = accept_data if isinstance(accept_data, list) else []
+                print(f"[ACCEPT 페이지{page}] {len(accept_sheets)}건")
+                for sheet in accept_sheets:
+                    if sheet.get("shipmentBoxId"):
+                        accept_ship_box_ids.append(sheet.get("shipmentBoxId"))
+                next_token = accept_result.get("nextToken", "")
+                if not next_token or not accept_sheets:
+                    break
+            else:
+                print(f"[ACCEPT 조회 실패] {accept_result}")
+                break
+            if page >= 20:
+                break
+
+        print(f"[ACCEPT 전체] {len(accept_ship_box_ids)}건 전환 대상")
+        if accept_ship_box_ids:
+            converted = accept_to_instruct(accept_ship_box_ids)
+            print(f"[전환 완료] {converted}건")
+            time.sleep(3)  # 전환 반영 대기 시간 증가
 
         # 상품준비중(INSTRUCT) 수집
         next_token = ""
@@ -147,8 +164,6 @@ def _fetch_orders():
                 break
 
             data = result.get("data", [])
-            print(f"[data 타입] {type(data).__name__} / 값 미리보기: {str(data)[:300]}")
-
             if isinstance(data, dict):
                 sheet_list = data.get("orderSheets", [])
             elif isinstance(data, list):
