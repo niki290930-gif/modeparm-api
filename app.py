@@ -5,6 +5,7 @@ import hmac
 import hashlib
 from datetime import datetime, timedelta
 import time
+import json
 
 app = Flask(__name__)
 CORS(app)
@@ -46,7 +47,6 @@ def accept_to_instruct(ship_box_ids):
         for i in range(0, len(ship_box_ids), 50):
             chunk = ship_box_ids[i:i+50]
             path = f"/v2/providers/openapi/apis/api/v4/vendors/{COUPANG_VENDOR_ID}/ordersheets/acknowledgement"
-            import json
             body = json.dumps({"vendorId": COUPANG_VENDOR_ID, "shipmentBoxIds": chunk})
             now = datetime.utcnow()
             datetime_str = now.strftime("%y%m%dT%H%M%SZ")
@@ -64,6 +64,7 @@ def accept_to_instruct(ship_box_ids):
                 data=body, timeout=10
             )
             result = resp.json()
+            print(f"[전환 응답] code={result.get('code')} message={result.get('message')}")
             if str(result.get("code")) == "200":
                 converted += len(chunk)
         return converted
@@ -71,27 +72,22 @@ def accept_to_instruct(ship_box_ids):
         print(f"[전환 오류] {e}")
         return 0
 
-# ── 기본 상태 확인 ──────────────────────────────
 @app.route("/")
 def index():
     return jsonify({"status": "ok", "message": "모드팜 API 서버"})
 
-# ★ 헬스체크 (웹앱에서 서버 깨울 때 사용)
 @app.route("/health")
 def health():
     return jsonify({"status": "ok"})
 
-# ── 쿠팡 주문 수집 (기존 경로 유지) ────────────
 @app.route("/coupang/orders")
 def get_coupang_orders():
     return _fetch_orders()
 
-# ★ 웹앱 연동용 단축 경로 추가
 @app.route("/orders")
 def get_orders():
     return _fetch_orders()
 
-# ── 주문 수집 공통 로직 ─────────────────────────
 def _fetch_orders():
     try:
         path = f"/v2/providers/openapi/apis/api/v4/vendors/{COUPANG_VENDOR_ID}/ordersheets"
@@ -101,7 +97,9 @@ def _fetch_orders():
         all_orders = []
         seen_ids = set()
 
-        # 결제완료 → 상품준비중 전환
+        print(f"[수집 시작] 기간: {created_from} ~ {created_to}")
+
+        # 결제완료(ACCEPT) → 상품준비중(INSTRUCT) 전환
         accept_query = f"createdAtFrom={created_from}&createdAtTo={created_to}&status=ACCEPT&maxPerPage=50"
         auth = make_signature("GET", path, accept_query)
         resp = requests.get(
@@ -110,15 +108,25 @@ def _fetch_orders():
             timeout=10
         )
         accept_result = resp.json()
+        print(f"[ACCEPT 조회] code={accept_result.get('code')} message={accept_result.get('message')}")
+
         if str(accept_result.get("code")) == "200":
             accept_data = accept_result.get("data", [])
-            accept_sheets = accept_data if isinstance(accept_data, list) else []
+            if isinstance(accept_data, dict):
+                accept_sheets = accept_data.get("orderSheets", [])
+            else:
+                accept_sheets = accept_data if isinstance(accept_data, list) else []
+            print(f"[ACCEPT 건수] {len(accept_sheets)}건")
             ship_box_ids = [sheet.get("shipmentBoxId") for sheet in accept_sheets if sheet.get("shipmentBoxId")]
+            print(f"[전환 대상 shipmentBoxId] {ship_box_ids}")
             if ship_box_ids:
-                accept_to_instruct(ship_box_ids)
+                converted = accept_to_instruct(ship_box_ids)
+                print(f"[전환 완료] {converted}건")
                 time.sleep(2)
+        else:
+            print(f"[ACCEPT 조회 실패] {accept_result}")
 
-        # 상품준비중 수집
+        # 상품준비중(INSTRUCT) 수집
         next_token = ""
         page = 0
         while True:
@@ -130,28 +138,36 @@ def _fetch_orders():
 
             auth = make_signature("GET", path, query)
             url = f"https://api-gateway.coupang.com{path}?{query}"
-            resp = requests.get(
-                url,
-                headers={"Authorization": auth, "Content-Type": "application/json"},
-                timeout=10
-            )
+            resp = requests.get(url, headers={"Authorization": auth, "Content-Type": "application/json"}, timeout=15)
             result = resp.json()
+            print(f"[INSTRUCT 페이지{page}] code={result.get('code')} message={result.get('message')}")
 
             if str(result.get("code")) != "200":
+                print(f"[INSTRUCT 실패] 전체 응답: {json.dumps(result, ensure_ascii=False)[:500]}")
                 break
 
             data = result.get("data", [])
-            sheet_list = data if isinstance(data, list) else data.get("orderSheets", [])
+            print(f"[data 타입] {type(data).__name__} / 값 미리보기: {str(data)[:300]}")
+
+            if isinstance(data, dict):
+                sheet_list = data.get("orderSheets", [])
+            elif isinstance(data, list):
+                sheet_list = data
+            else:
+                sheet_list = []
+
+            print(f"[INSTRUCT 페이지{page}] sheet_list 건수: {len(sheet_list)}")
 
             for sheet in sheet_list:
                 receiver = sheet.get("receiver", {})
                 order_id = str(sheet.get("orderId", ""))
                 is_cancel = sheet.get("status", "") in ("CANCEL_REQUEST", "CANCELED")
+                order_items = sheet.get("orderItems", [])
+                print(f"  [주문] orderId={order_id} items={len(order_items)}개 status={sheet.get('status')}")
 
-                for item in sheet.get("orderItems", []):
+                for item in order_items:
                     item_id = str(item.get("orderItemId", ""))
-                    oid = order_id if len(sheet.get("orderItems", [])) == 1 else f"{order_id}-{item_id}"
-
+                    oid = order_id if len(order_items) == 1 else f"{order_id}-{item_id}"
                     if oid in seen_ids:
                         continue
                     seen_ids.add(oid)
@@ -189,6 +205,7 @@ def _fetch_orders():
 
             next_token = result.get("nextToken", "")
             if not next_token or not sheet_list:
+                print(f"[수집 완료] 총 {len(all_orders)}건")
                 break
             if page >= 20:
                 break
@@ -196,6 +213,8 @@ def _fetch_orders():
         return jsonify({"success": True, "orders": all_orders, "count": len(all_orders)})
 
     except Exception as e:
+        import traceback
+        print(f"[오류] {traceback.format_exc()}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 
