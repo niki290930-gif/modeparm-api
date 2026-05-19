@@ -91,10 +91,12 @@ def get_coupang_orders():
         resp = requests.get(f"https://api-gateway.coupang.com{path}?{accept_query}",
                             headers={"Authorization": auth, "Content-Type": "application/json"}, timeout=10)
         accept_result = resp.json()
+        print(f"[ACCEPT] code={accept_result.get('code')} message={accept_result.get('message')}")
         if str(accept_result.get("code")) == "200":
             accept_data = accept_result.get("data", [])
             accept_sheets = accept_data if isinstance(accept_data, list) else []
             ship_box_ids = [sheet.get("shipmentBoxId") for sheet in accept_sheets if sheet.get("shipmentBoxId")]
+            print(f"[ACCEPT] {len(ship_box_ids)}건 전환 대상")
             if ship_box_ids:
                 accept_to_instruct(ship_box_ids)
                 time.sleep(2)
@@ -113,14 +115,15 @@ def get_coupang_orders():
             url = f"https://api-gateway.coupang.com{path}?{query}"
             resp = requests.get(url, headers={"Authorization": auth, "Content-Type": "application/json"}, timeout=10)
             result = resp.json()
+            print(f"[INSTRUCT 페이지{page}] code={result.get('code')} message={result.get('message')}")
 
             if str(result.get("code")) != "200":
                 break
 
             data = result.get("data", [])
             sheet_list = data if isinstance(data, list) else data.get("orderSheets", [])
+            print(f"[INSTRUCT 페이지{page}] sheet_list={len(sheet_list)}건")
 
-            # 디버그: 각 sheet의 orderId와 orderItems 개수 출력
             for s in sheet_list[:5]:
                 print(f"[DEBUG] orderId={s.get('orderId')} items={len(s.get('orderItems',[]))} shipmentBoxId={s.get('shipmentBoxId')}")
 
@@ -128,12 +131,10 @@ def get_coupang_orders():
                 receiver = sheet.get("receiver", {})
                 order_id = str(sheet.get("orderId", ""))
                 is_cancel = sheet.get("status", "") in ("CANCEL_REQUEST", "CANCELED")
-
                 shipment_box_id = str(sheet.get("shipmentBoxId", ""))
 
                 for item in sheet.get("orderItems", []):
                     item_id = str(item.get("orderItemId", ""))
-                    # shipmentBoxId로 고유 식별 (같은 orderId라도 상품별로 다른 shipmentBoxId)
                     oid = f"{order_id}-{shipment_box_id}" if shipment_box_id else f"{order_id}-{item_id}"
 
                     if oid in seen_ids:
@@ -182,9 +183,11 @@ def get_coupang_orders():
             if page >= 20:
                 break
 
+        print(f"[완료] 총 {len(all_orders)}건 수집")
         return jsonify({"success": True, "orders": all_orders, "count": len(all_orders)})
 
     except Exception as e:
+        print(f"[오류] {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 if __name__ == "__main__":
