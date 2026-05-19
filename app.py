@@ -120,19 +120,21 @@ def get_coupang_orders():
             data = result.get("data", [])
             sheet_list = data if isinstance(data, list) else data.get("orderSheets", [])
 
-            # 디버그: 첫 번째 sheet raw 데이터 출력
-            if page == 1 and sheet_list:
-                import json
-                print("[DEBUG sheet]", json.dumps(sheet_list[0], ensure_ascii=False)[:2000])
+            # 디버그: 각 sheet의 orderId와 orderItems 개수 출력
+            for s in sheet_list[:5]:
+                print(f"[DEBUG] orderId={s.get('orderId')} items={len(s.get('orderItems',[]))} shipmentBoxId={s.get('shipmentBoxId')}")
 
             for sheet in sheet_list:
                 receiver = sheet.get("receiver", {})
                 order_id = str(sheet.get("orderId", ""))
                 is_cancel = sheet.get("status", "") in ("CANCEL_REQUEST", "CANCELED")
 
+                shipment_box_id = str(sheet.get("shipmentBoxId", ""))
+
                 for item in sheet.get("orderItems", []):
                     item_id = str(item.get("orderItemId", ""))
-                    oid = order_id if len(sheet.get("orderItems", [])) == 1 else f"{order_id}-{item_id}"
+                    # shipmentBoxId로 고유 식별 (같은 orderId라도 상품별로 다른 shipmentBoxId)
+                    oid = f"{order_id}-{shipment_box_id}" if shipment_box_id else f"{order_id}-{item_id}"
 
                     if oid in seen_ids:
                         continue
