@@ -64,7 +64,6 @@ def accept_to_instruct(ship_box_ids):
                 data=body, timeout=10
             )
             result = resp.json()
-            print(f"[전환 응답] code={result.get('code')} message={result.get('message')}")
             if str(result.get("code")) == "200":
                 converted += len(chunk)
         return converted
@@ -80,70 +79,31 @@ def index():
 def health():
     return jsonify({"status": "ok"})
 
-@app.route("/coupang/orders")
-def get_coupang_orders():
-    return _fetch_orders()
-
 @app.route("/orders")
-def get_orders():
-    return _fetch_orders()
-
-def _fetch_orders():
+def get_coupang_orders():
     try:
         path = f"/v2/providers/openapi/apis/api/v4/vendors/{COUPANG_VENDOR_ID}/ordersheets"
         now = datetime.utcnow()
         created_from = (now - timedelta(days=14)).strftime("%Y-%m-%d")
-        created_to = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+        created_to = now.strftime("%Y-%m-%d")
         all_orders = []
         seen_ids = set()
 
-        print(f"[수집 시작] 기간: {created_from} ~ {created_to}")
+        # 결제완료 → 상품준비중 전환
+        accept_query = f"createdAtFrom={created_from}&createdAtTo={created_to}&status=ACCEPT&maxPerPage=50"
+        auth = make_signature("GET", path, accept_query)
+        resp = requests.get(f"https://api-gateway.coupang.com{path}?{accept_query}",
+                            headers={"Authorization": auth, "Content-Type": "application/json"}, timeout=10)
+        accept_result = resp.json()
+        if str(accept_result.get("code")) == "200":
+            accept_data = accept_result.get("data", [])
+            accept_sheets = accept_data if isinstance(accept_data, list) else []
+            ship_box_ids = [sheet.get("shipmentBoxId") for sheet in accept_sheets if sheet.get("shipmentBoxId")]
+            if ship_box_ids:
+                accept_to_instruct(ship_box_ids)
+                time.sleep(2)
 
-        # 결제완료(ACCEPT) → 상품준비중(INSTRUCT) 전환 (페이지 전체 수집)
-        accept_ship_box_ids = []
-        next_token = ""
-        page = 0
-        while True:
-            page += 1
-            if next_token:
-                accept_query = f"createdAtFrom={created_from}&createdAtTo={created_to}&status=ACCEPT&maxPerPage=50&nextToken={next_token}"
-            else:
-                accept_query = f"createdAtFrom={created_from}&createdAtTo={created_to}&status=ACCEPT&maxPerPage=50"
-            auth = make_signature("GET", path, accept_query)
-            resp = requests.get(
-                f"https://api-gateway.coupang.com{path}?{accept_query}",
-                headers={"Authorization": auth, "Content-Type": "application/json"},
-                timeout=10
-            )
-            accept_result = resp.json()
-            print(f"[ACCEPT 페이지{page}] code={accept_result.get('code')} message={accept_result.get('message')}")
-
-            if str(accept_result.get("code")) == "200":
-                accept_data = accept_result.get("data", [])
-                if isinstance(accept_data, dict):
-                    accept_sheets = accept_data.get("orderSheets", [])
-                else:
-                    accept_sheets = accept_data if isinstance(accept_data, list) else []
-                print(f"[ACCEPT 페이지{page}] {len(accept_sheets)}건")
-                for sheet in accept_sheets:
-                    if sheet.get("shipmentBoxId"):
-                        accept_ship_box_ids.append(sheet.get("shipmentBoxId"))
-                next_token = accept_result.get("nextToken", "")
-                if not next_token or not accept_sheets:
-                    break
-            else:
-                print(f"[ACCEPT 조회 실패] {accept_result}")
-                break
-            if page >= 20:
-                break
-
-        print(f"[ACCEPT 전체] {len(accept_ship_box_ids)}건 전환 대상")
-        if accept_ship_box_ids:
-            converted = accept_to_instruct(accept_ship_box_ids)
-            print(f"[전환 완료] {converted}건")
-            time.sleep(3)  # 전환 반영 대기 시간 증가
-
-        # 상품준비중(INSTRUCT) 수집
+        # 상품준비중 수집
         next_token = ""
         page = 0
         while True:
@@ -155,34 +115,28 @@ def _fetch_orders():
 
             auth = make_signature("GET", path, query)
             url = f"https://api-gateway.coupang.com{path}?{query}"
-            resp = requests.get(url, headers={"Authorization": auth, "Content-Type": "application/json"}, timeout=15)
+            resp = requests.get(url, headers={"Authorization": auth, "Content-Type": "application/json"}, timeout=10)
             result = resp.json()
-            print(f"[INSTRUCT 페이지{page}] code={result.get('code')} message={result.get('message')}")
 
             if str(result.get("code")) != "200":
-                print(f"[INSTRUCT 실패] 전체 응답: {json.dumps(result, ensure_ascii=False)[:500]}")
                 break
 
             data = result.get("data", [])
-            if isinstance(data, dict):
-                sheet_list = data.get("orderSheets", [])
-            elif isinstance(data, list):
-                sheet_list = data
-            else:
-                sheet_list = []
+            sheet_list = data if isinstance(data, list) else data.get("orderSheets", [])
 
-            print(f"[INSTRUCT 페이지{page}] sheet_list 건수: {len(sheet_list)}")
+            # 디버그: 첫 번째 sheet raw 데이터 출력
+            if page == 1 and sheet_list:
+                print("[DEBUG sheet]", json.dumps(sheet_list[0], ensure_ascii=False)[:3000])
 
             for sheet in sheet_list:
                 receiver = sheet.get("receiver", {})
                 order_id = str(sheet.get("orderId", ""))
                 is_cancel = sheet.get("status", "") in ("CANCEL_REQUEST", "CANCELED")
-                order_items = sheet.get("orderItems", [])
-                print(f"  [주문] orderId={order_id} items={len(order_items)}개 status={sheet.get('status')}")
 
-                for item in order_items:
+                for item in sheet.get("orderItems", []):
                     item_id = str(item.get("orderItemId", ""))
-                    oid = order_id if len(order_items) == 1 else f"{order_id}-{item_id}"
+                    oid = order_id if len(sheet.get("orderItems", [])) == 1 else f"{order_id}-{item_id}"
+
                     if oid in seen_ids:
                         continue
                     seen_ids.add(oid)
@@ -199,6 +153,7 @@ def _fetch_orders():
                     addr2 = receiver.get("addr2", "")
                     zipcode = receiver.get("postCode", "") or receiver.get("zipCode", "")
                     price = item.get("salesPrice", 0) or item.get("orderPrice", 0)
+                    qty = item.get("shippingCount", 0) or item.get("quantity", 1)
 
                     all_orders.append({
                         "order_id": oid,
@@ -207,7 +162,7 @@ def _fetch_orders():
                         "ordered_at": sheet.get("orderedAt", "") or "",
                         "product": product,
                         "option": option_str,
-                        "qty": item.get("quantity", 1),
+                        "qty": qty,
                         "buyer": receiver.get("name", ""),
                         "phone": receiver.get("safeNumber", "") or receiver.get("phone", ""),
                         "zipcode": zipcode,
@@ -220,7 +175,6 @@ def _fetch_orders():
 
             next_token = result.get("nextToken", "")
             if not next_token or not sheet_list:
-                print(f"[수집 완료] 총 {len(all_orders)}건")
                 break
             if page >= 20:
                 break
@@ -228,10 +182,7 @@ def _fetch_orders():
         return jsonify({"success": True, "orders": all_orders, "count": len(all_orders)})
 
     except Exception as e:
-        import traceback
-        print(f"[오류] {traceback.format_exc()}")
         return jsonify({"success": False, "error": str(e)}), 500
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
