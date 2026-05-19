@@ -75,7 +75,7 @@ def accept_to_instruct(ship_box_ids):
 def index():
     return jsonify({"status": "ok", "message": "모드팜 API 서버"})
 
-@app.route("/coupang/orders")
+@app.route("/orders")
 def get_coupang_orders():
     try:
         path = f"/v2/providers/openapi/apis/api/v4/vendors/{COUPANG_VENDOR_ID}/ordersheets"
@@ -150,6 +150,9 @@ def get_coupang_orders():
                     addr2 = receiver.get("addr2", "")
                     zipcode = receiver.get("postCode", "") or receiver.get("zipCode", "")
                     price = item.get("salesPrice", 0) or item.get("orderPrice", 0)
+                    qty = item.get("shippingCount", 0) or item.get("quantity", 1)
+                    remote_price = sheet.get("remotePrice", 0) or 0
+                    remote_area = sheet.get("remoteArea", False)
 
                     all_orders.append({
                         "order_id": oid,
@@ -158,7 +161,7 @@ def get_coupang_orders():
                         "ordered_at": sheet.get("orderedAt", "") or "",
                         "product": product,
                         "option": option_str,
-                        "qty": item.get("quantity", 1),
+                        "qty": qty,
                         "buyer": receiver.get("name", ""),
                         "phone": receiver.get("safeNumber", "") or receiver.get("phone", ""),
                         "zipcode": zipcode,
@@ -167,6 +170,8 @@ def get_coupang_orders():
                         "delivery_msg": sheet.get("parcelPrintMessage", ""),
                         "price": price,
                         "cancel": is_cancel,
+                        "remote_area": remote_area,
+                        "remote_price": remote_price,
                     })
 
             next_token = result.get("nextToken", "")
