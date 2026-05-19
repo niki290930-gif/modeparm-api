@@ -5,7 +5,6 @@ import hmac
 import hashlib
 from datetime import datetime, timedelta
 import time
-import json
 
 app = Flask(__name__)
 CORS(app)
@@ -47,6 +46,7 @@ def accept_to_instruct(ship_box_ids):
         for i in range(0, len(ship_box_ids), 50):
             chunk = ship_box_ids[i:i+50]
             path = f"/v2/providers/openapi/apis/api/v4/vendors/{COUPANG_VENDOR_ID}/ordersheets/acknowledgement"
+            import json
             body = json.dumps({"vendorId": COUPANG_VENDOR_ID, "shipmentBoxIds": chunk})
             now = datetime.utcnow()
             datetime_str = now.strftime("%y%m%dT%H%M%SZ")
@@ -75,11 +75,7 @@ def accept_to_instruct(ship_box_ids):
 def index():
     return jsonify({"status": "ok", "message": "모드팜 API 서버"})
 
-@app.route("/health")
-def health():
-    return jsonify({"status": "ok"})
-
-@app.route("/orders")
+@app.route("/coupang/orders")
 def get_coupang_orders():
     try:
         path = f"/v2/providers/openapi/apis/api/v4/vendors/{COUPANG_VENDOR_ID}/ordersheets"
@@ -126,7 +122,8 @@ def get_coupang_orders():
 
             # 디버그: 첫 번째 sheet raw 데이터 출력
             if page == 1 and sheet_list:
-                print("[DEBUG sheet]", json.dumps(sheet_list[0], ensure_ascii=False)[:3000])
+                import json
+                print("[DEBUG sheet]", json.dumps(sheet_list[0], ensure_ascii=False)[:2000])
 
             for sheet in sheet_list:
                 receiver = sheet.get("receiver", {})
@@ -153,7 +150,6 @@ def get_coupang_orders():
                     addr2 = receiver.get("addr2", "")
                     zipcode = receiver.get("postCode", "") or receiver.get("zipCode", "")
                     price = item.get("salesPrice", 0) or item.get("orderPrice", 0)
-                    qty = item.get("shippingCount", 0) or item.get("quantity", 1)
 
                     all_orders.append({
                         "order_id": oid,
@@ -162,7 +158,7 @@ def get_coupang_orders():
                         "ordered_at": sheet.get("orderedAt", "") or "",
                         "product": product,
                         "option": option_str,
-                        "qty": qty,
+                        "qty": item.get("quantity", 1),
                         "buyer": receiver.get("name", ""),
                         "phone": receiver.get("safeNumber", "") or receiver.get("phone", ""),
                         "zipcode": zipcode,
